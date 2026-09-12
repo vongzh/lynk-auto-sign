@@ -102,16 +102,7 @@ USER_PUSH_WECOM_WEBHOOK = ""
 # 分享每日上限 (后端限频, 超过会报"今日已分享")
 SHARE_DAILY_LIMIT = 1
 
-# [FORK] License 设备指纹 / 查找辅助函数已随校验逻辑一并移除
-def verify_license(verbose=True):
-    """[FORK] License 校验已移除 — 自用版直接放行, 不读 license.txt."""
-    return True, "self-hosted"
-
-
-def anti_tamper_check():
-    """[FORK] 反篡改 / 反调试检测已移除 — 自用版直接放行."""
-    return
-
+# [FORK] License 校验与反篡改检测已全部移除 — 自用版直接放行, 不读 license.txt, 不依赖 cryptography
 
 # ==================== accessToken 缓存 ====================
 def get_cache_file():
@@ -347,9 +338,6 @@ def get_access_token(rt_or_at, device_id, force=False):
 
 # ==================== 业务 API ====================
 def lynk_call(method, path, token, body=None, params=None):
-    # 每次业务请求前隐式再验 license (防 patch 绕过)
-    if not LICENSE_USER or LICENSE_USER == "anonymous":
-        sys.exit("X LICENSE_USER 未初始化, 拒绝业务请求")
     sig = build_sig(method, path, params)
     headers = {
         "token": token,
@@ -842,7 +830,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
 
     # 5. 构造 markdown 推送
     md_lines.insert(0, f"**时间**: `{now()}`")
-    md_lines.insert(1, f"**用户标识**: `{LICENSE_USER}`")
+    md_lines.insert(1, f"**用户标识**: `self-hosted`")
     md_lines.insert(2, f"**accessToken**: {'缓存命中' if source == 'cache' else '本次 refresh'}")
     if rt_left is not None:
         md_lines.append("")
@@ -869,11 +857,6 @@ def main():
     # [FORK] --request-license / --request-note 已移除 (自用版无需向作者申请授权)
 
     args = parser.parse_args()
-
-    # ==================== License 检查 (强制, 不可跳过) ====================
-    anti_tamper_check()  # 防破解检测
-    # [FORK] License 检查(含 request-license 申请分支)已移除, 直接放行
-    verify_license(verbose=True)
 
     if args.clear_cache:
         clear_cached_at()
