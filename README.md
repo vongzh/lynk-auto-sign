@@ -17,6 +17,21 @@
 - 多通道 Markdown 推送：企业微信 / 钉钉 / 飞书 / Telegram / Server 酱 / PushPlus / Bark
 - `accessToken` 本地缓存（与 App 行为一致，避免每次强制 refresh）
 
+## 2026-09 签到 403 修复说明
+领克已将真正执行签到的接口从 `/up/api/v1/user/sign` 改为 `/up/api/v1/user/sign/upgrade`，
+并要求 **App 原生签名**（含 `Content-MD5`）。旧 H5 `AppKey` 调用签到会返回
+`403 Unauthorized Consumer`（查询能量体/连续天数等接口仍可用 H5 签名）。
+
+本脚本已内置原生 `AppKey` / `AppSecret`（与 App 内常量一致，非个人隐私）；一般无需额外配置。
+若日后再次失效，可用环境变量覆盖：
+
+| 变量 | 说明 |
+|---|---|
+| `LYNK_NATIVE_APP_KEY` | 原生签名 AppKey |
+| `LYNK_NATIVE_APP_SECRET` | 原生签名 AppSecret |
+
+今日是否已签改查 `/up/api/v1/user/sign/day/info`（`signStatus=1` 表示已签）。
+
 ## 依赖
 - Python 3.8+
 - `requests`（脚本检测到缺失时会自动 `pip install requests`）
@@ -43,6 +58,7 @@
 | `LYNK_TOKEN_B` | B 账号 refreshToken（逗号分隔，启用自动分享时填） | 可选 |
 | `LYNK_SHARE_CONTENT_ID` | 分享文章 ID（默认热门 ID） | 可选 |
 | `LYNK_AUTO_SHARE` | `1`/`true` 启用自动分享（默认 false，仅生成 URL） | 可选 |
+| `LYNK_NATIVE_APP_KEY` / `LYNK_NATIVE_APP_SECRET` | 原生签到签名密钥（一般无需改，脚本已内置） | 可选 |
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
 | `PUSH_WECOM_WEBHOOK` | 企业微信机器人 webhook | 可选 |
 | `PUSH_DINGTALK_WEBHOOK` | 钉钉机器人 webhook | 可选 |

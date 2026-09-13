@@ -8,6 +8,11 @@
   - Markdown 格式推送输出 (企业微信/钉钉/飞书/Telegram/PushPlus/Bark/Server酱)
   - 自动分享任务 (配 LYNK_TOKEN_B, 每天自动刷分享积分)
 
+2026-09 修复:
+  - 签到接口已从 /up/api/v1/user/sign 迁移到 /up/api/v1/user/sign/upgrade
+  - 写签到改用 App 原生签名 (含 Content-MD5); 旧 H5 AppKey 会 403 Unauthorized Consumer
+  - 今日是否已签改查 /up/api/v1/user/sign/day/info (signStatus=1)
+
 ★★★ 最简单用法 ★★★
   1. 编辑下面 USER_CONFIG 块, 把 USER_REFRESH_TOKEN 改成你自己的 (28 天有效的那种)
   2. python3 ql_lynk.py      直接跑就行
@@ -18,6 +23,8 @@
   LYNK_TOKEN_B           B 账号 refreshToken (逗号分隔, 启用 auto-share 时用)
   LYNK_SHARE_CONTENT_ID  分享文章 ID (默认 2072260486405246976)
   LYNK_AUTO_SHARE        1/true 启用自动分享 (默认 False, 仅生成 URL)
+  LYNK_NATIVE_APP_KEY    原生签名 AppKey (签到必需, 一般无需改)
+  LYNK_NATIVE_APP_SECRET 原生签名 AppSecret (签到必需, 一般无需改)
   PUSH_WECOM_WEBHOOK     企业微信机器人 webhook
   PUSH_DINGTALK_WEBHOOK  钉钉机器人 webhook
   PUSH_FEISHU_WEBHOOK    飞书机器人 webhook
@@ -56,11 +63,21 @@ API_BASE = "https://app-api-gw-toc.lynkco.com"
 OAUTH_BASE = "https://app-services.lynkco.com.cn"
 REFRESH_URL = OAUTH_BASE + "/auth/login/refresh"
 
-CA_KEY = "204644386"
-CA_SECRET = "QCl7udM3PB9cOIOwquwPglikFQnzJRsX"
+# H5 签名密钥 (查询类接口仍可用; 签到写接口已对该 AppKey 撤销授权)
+CA_KEY = os.environ.get("LYNK_H5_APP_KEY", "204644386").strip() or "204644386"
+CA_SECRET = os.environ.get("LYNK_H5_APP_SECRET", "QCl7udM3PB9cOIOwquwPglikFQnzJRsX").strip() or "QCl7udM3PB9cOIOwquwPglikFQnzJRsX"
 SIG_HDRS = "X-Ca-Key,X-Ca-Timestamp,X-Ca-Nonce,X-Ca-Signature-Method"
 
-EP_SIGN = "/up/api/v1/user/sign"
+# App 原生签名密钥 (签到 /up/api/v1/user/sign/upgrade 必需; H5 Key 会 403 Unauthorized Consumer)
+# 可用环境变量覆盖; 默认值为 App 内置常量 (非个人隐私)
+NATIVE_APP_KEY = os.environ.get("LYNK_NATIVE_APP_KEY", "203760416").strip() or "203760416"
+NATIVE_APP_SECRET = os.environ.get("LYNK_NATIVE_APP_SECRET", "e1msl9aqd101gfcjpo873hrs5jg752og").strip() or "e1msl9aqd101gfcjpo873hrs5jg752og"
+NATIVE_SIG_HDRS = "x-ca-nonce,x-ca-key,x-ca-timestamp"
+NATIVE_ANDROID_UA = "ALIYUN-ANDROID-UA"
+
+# 2026-07 起真正执行签到的接口改为 sign/upgrade + 原生签名; 旧 /user/sign 对 H5 Key 返回 403
+EP_SIGN = "/up/api/v1/user/sign/upgrade"
+EP_SIGN_DAY = "/up/api/v1/user/sign/day/info"           # 今日是否已签 (signStatus=1)
 EP_SIGN_INFO = "/up/api/v1/userReward/getContinueDaysAndSignCard"
 EP_ENERGY = "/app/energy/myEnergy"
 EP_TASKS = "/up/api/v1/userReward/getTaskList"           # 签到任务进度 (连续7天/月度/季度/年度)
@@ -195,6 +212,7 @@ def gen_nonce():
 
 
 def build_sig(method, path, params=None):
+    """H5 签名 (查询类接口: 能量体/任务/连续天数/分享等)"""
     ts = str(int(time.time() * 1000))
     nonce = gen_nonce()
     sh = {
@@ -220,6 +238,51 @@ def build_sig(method, path, params=None):
         "X-Ca-Signature": sig,
         "Accept": "*/*",
     }
+
+
+def build_native_sig(method, path, body=None):
+    """App 原生 SDK 签名 (签到 upgrade 等写接口必需).
+
+    对照阿里云 SignUtil.buildStringToSign:
+      METHOD\\n Accept\\n Content-MD5\\n Content-Type\\n Date\\n
+      (x-ca-* 头按字典序, 每行 name:value\\n) path
+
+    POST body 即使是空对象 b"{}" 也必须算 Content-MD5 并放入签名与请求头.
+    """
+    nonce = str(uuid.uuid4())
+    timestamp = str(int(time.time() * 1000))
+    date_str = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())
+    accept = "application/json; charset=utf-8"
+    content_type = "application/json; charset=utf-8"
+    content_md5 = ""
+    if body:
+        content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode()
+
+    ca_headers = {
+        "x-ca-key": NATIVE_APP_KEY,
+        "x-ca-nonce": nonce,
+        "x-ca-timestamp": timestamp,
+    }
+    parts = [method.upper(), "\n", accept, "\n", content_md5, "\n", content_type, "\n", date_str, "\n"]
+    for k in sorted(ca_headers.keys()):
+        parts.append(f"{k}:{ca_headers[k]}")
+        parts.append("\n")
+    parts.append(path)
+    string_to_sign = "".join(parts)
+    digest = hmac.new(NATIVE_APP_SECRET.encode(), string_to_sign.encode(), hashlib.sha256).digest()
+    signature = base64.b64encode(digest).decode()
+
+    result = {
+        **ca_headers,
+        "x-ca-signature-headers": NATIVE_SIG_HDRS,
+        "x-ca-signature": signature,
+        "date": date_str,
+        "accept": accept,
+        "content-type": content_type,
+    }
+    if content_md5:
+        result["content-md5"] = content_md5
+    return result
 
 
 # ==================== 工具函数 ====================
@@ -337,7 +400,27 @@ def get_access_token(rt_or_at, device_id, force=False):
 
 
 # ==================== 业务 API ====================
+def _parse_api_response(r):
+    """解析业务响应; 非 JSON 时保留 HTTP 状态码与原文, 便于排查 403 Unauthorized Consumer"""
+    try:
+        data = r.json()
+        if isinstance(data, dict) and "http_status" not in data:
+            data["_http_status"] = r.status_code
+        return data
+    except Exception:
+        return {"code": r.status_code, "message": (r.text or "")[:200], "raw": (r.text or "")[:500]}
+
+
+def is_api_ok(resp):
+    if not isinstance(resp, dict):
+        return False
+    if resp.get("success") is True:
+        return True
+    return str(resp.get("code")) in ("200", "success")
+
+
 def lynk_call(method, path, token, body=None, params=None):
+    """H5 签名请求 (查询类)"""
     sig = build_sig(method, path, params)
     headers = {
         "token": token,
@@ -350,12 +433,36 @@ def lynk_call(method, path, token, body=None, params=None):
             r = requests.get(url, headers=headers, params=params, timeout=20)
         else:
             r = requests.post(url, headers=headers, json=body or {}, timeout=20)
-        try:
-            return r.json()
-        except Exception:
-            return {"code": r.status_code, "raw": r.text[:500]}
+        return _parse_api_response(r)
     except Exception as e:
         return {"code": "EXCEPTION", "message": str(e)}
+
+
+def lynk_native_call(method, path, token, body_bytes=None):
+    """原生 SDK 签名请求 (签到 upgrade 等写接口)"""
+    body = body_bytes if body_bytes is not None else (b"{}" if method.upper() == "POST" else None)
+    sig = build_native_sig(method, path, body=body)
+    headers = {
+        "token": token,
+        "ca_version": "1",
+        "x-requiretoken": "false",
+        "User-Agent": NATIVE_ANDROID_UA,
+        **sig,
+    }
+    try:
+        url = f"{API_BASE}{path}"
+        if method.upper() == "GET":
+            r = requests.get(url, headers=headers, timeout=20)
+        else:
+            r = requests.post(url, headers=headers, data=body, timeout=20)
+        return _parse_api_response(r)
+    except Exception as e:
+        return {"code": "EXCEPTION", "message": str(e)}
+
+
+def lynk_sign_day_info(token):
+    """今日签到状态 (signStatus=1 表示已签); 可用 H5 签名"""
+    return lynk_call("GET", EP_SIGN_DAY, token)
 
 
 def lynk_sign_info(token):
@@ -363,7 +470,8 @@ def lynk_sign_info(token):
 
 
 def lynk_do_sign(token):
-    return lynk_call("POST", EP_SIGN, token, body={})
+    """执行签到: POST /up/api/v1/user/sign/upgrade + 原生签名 + Content-MD5"""
+    return lynk_native_call("POST", EP_SIGN, token, body_bytes=b"{}")
 
 
 def lynk_energy(token):
@@ -679,9 +787,17 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
     # 2. 账户信息 + 签到状态
     log("INFO", "[2/5] 查询账户信息 + 签到状态...")
 
-    # 2a. 签到状态 (必查, 后面要用)
+    # 2a. 今日签到状态 (day/info 才有可靠的 signStatus; 旧 getContinueDays 常为 None)
+    day_info = lynk_sign_day_info(access_token)
+    sign_status = None
+    if is_api_ok(day_info):
+        sign_status = (day_info.get("data") or {}).get("signStatus")
+    elif not quiet:
+        log("WARN", f"day/info 查询异常: code={day_info.get('code')} message={day_info.get('message', '')}")
+
+    # 2a'. 连续天数 / 补签卡
     info = lynk_sign_info(access_token)
-    if info.get("code") not in ("200", "success"):
+    if not is_api_ok(info):
         log("ERR", f"查询签到状态失败: code={info.get('code')}  message={info.get('message', '')}")
         if not quiet:
             log("INFO", f"  raw: {json.dumps(info, ensure_ascii=False)[:300]}")
@@ -689,7 +805,8 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         return 3
 
     data = info.get("data") or {}
-    sign_status = data.get("signStatus") or data.get("todaySigned") or data.get("status")
+    if sign_status is None:
+        sign_status = data.get("signStatus") or data.get("todaySigned") or data.get("status")
     streak = data.get("continuousSignDays") or data.get("serialDays") or data.get("continueDays") or 0
     sign_card = data.get("signCardNumber") or 0
     log("OK", f"签到状态: signStatus={sign_status}  连续签到={streak}天  补签卡={sign_card}张")
@@ -700,22 +817,22 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
     growth_name = "-"
     growth_value = "-"
     energy_resp = lynk_energy(access_token)
-    if isinstance(energy_resp, dict) and str(energy_resp.get("code")) in ("200", "success"):
+    if isinstance(energy_resp, dict) and is_api_ok(energy_resp):
         ed = energy_resp.get("data") or {}
         energy_point = ed.get("point", "-")
         energy_income = ed.get("incomePoint", "-")
     growth_resp = lynk_growth(access_token)
-    if isinstance(growth_resp, dict) and str(growth_resp.get("code")) in ("200", "success"):
+    if isinstance(growth_resp, dict) and is_api_ok(growth_resp):
         lv = (growth_resp.get("data") or {}).get("accountLevelVo") or {}
         growth_name = lv.get("name", "-")
         growth_value = lv.get("growth", "-")
     log("OK", f"账户: 能量体={energy_point}  累计获得={energy_income}  等级={growth_name}  成长值={growth_value}")
 
     # 2c. 签到任务进度 (连续7天/月度/季度/年度)
-    # 接口只返回 taskProcess (已签天数), 总天数从任务名 "X天" 里正则提取
+    # 接口返回 taskProcess = 已签天数, 总天数从任务名 "X天" 里正则提取
     task_progress = {}  # name -> "已签 X / 总 Y (奖励)"
     tasks_resp = lynk_tasks(access_token)
-    if isinstance(tasks_resp, dict) and str(tasks_resp.get("code")) in ("200", "success"):
+    if isinstance(tasks_resp, dict) and is_api_ok(tasks_resp):
         for t in (tasks_resp.get("data") or []):
             tname = t.get("taskName", "?")
             tproc = t.get("taskProcess", "?")
@@ -723,7 +840,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
             m = re.search(r"(\d+)天", tname)
             total = m.group(1) if m else None
             if total:
-                display = f"{int(total) - int(tproc)} / {total}"  # 剩余/总, 避免歧义
+                display = f"{tproc} / {total}"
             else:
                 display = str(tproc)
             task_progress[tname] = (display, treward)
@@ -739,7 +856,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         reward = "无新增"
     else:
         sign_resp = lynk_do_sign(access_token)
-        if sign_resp.get("code") in ("200", "success"):
+        if is_api_ok(sign_resp):
             log("OK", "签到成功!")
             sign_status_str = "✅ 签到成功"
             d = sign_resp.get("data") or {}
@@ -750,9 +867,22 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
             reward = ", ".join(parts) if parts else "无奖励字段"
             log("OK", f"奖励: {reward}")
         else:
-            log("ERR", f"签到失败: code={sign_resp.get('code')}  message={sign_resp.get('message', '')}")
-            push_text("领克签到失败", f"**❌ 签到接口失败**\n\n```\n{json.dumps(sign_resp, ensure_ascii=False)[:200]}\n```")
-            return 4
+            # 重复签到 / 已签: 部分后端用业务码或文案拒绝, 再查一次 day/info 兜底
+            msg = str(sign_resp.get("message") or sign_resp.get("raw") or "")
+            already_hint = any(k in msg for k in ("已签", "重复", "already", "signed"))
+            day2 = lynk_sign_day_info(access_token)
+            if already_hint or (is_api_ok(day2) and (day2.get("data") or {}).get("signStatus") == 1):
+                log("OK", f"今日已签到 (接口返回: code={sign_resp.get('code')} message={msg[:80]})")
+                sign_status_str = "✅ 已签到"
+                reward = "无新增"
+            else:
+                log("ERR", f"签到失败: code={sign_resp.get('code')}  message={msg[:120]}")
+                if "Unauthorized Consumer" in msg or str(sign_resp.get("code")) == "403":
+                    log("ERR", "提示: 签到需原生 AppKey; 确认 LYNK_NATIVE_APP_KEY/SECRET 或脚本内置常量未过期")
+                if not quiet:
+                    log("INFO", f"  raw: {json.dumps(sign_resp, ensure_ascii=False)[:300]}")
+                push_text("领克签到失败", f"**❌ 签到接口失败**\n\n```\n{json.dumps(sign_resp, ensure_ascii=False)[:200]}\n```")
+                return 4
 
     md_lines.append(f"**签到**: {sign_status_str}")
     md_lines.append(f"**奖励**: {reward}")
