@@ -1,0 +1,4 @@
+{
+  "name": "lynk-auto-sign",
+  "install": "python3 -m pip install --user -r requirements.txt"
+}
