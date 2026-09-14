@@ -14,7 +14,7 @@
 - 领克 APP 每日自动签到（连续 7 / 30 / 85 / 365 天进度、成长等级与成长值查询）
 - 签到任务进度查询
 - H5 分享链接生成（手动发微信给好友点击，主账号 +5 能量体）；可选自动分享（需配置 B 账号）
-- 多通道 Markdown 推送：优先复用青龙面板「通知」；也可另配企业微信 / 钉钉 / 飞书 / Telegram / Server 酱 / PushPlus / Bark
+- 多通道 Markdown 推送：默认 `QLAPI.systemNotify`（面板「系统设置 → 通知」）；也可另配企业微信 / 钉钉 / 飞书 / Telegram / Server 酱 / PushPlus / Bark
 - `accessToken` 本地缓存（与 App 行为一致，避免每次强制 refresh）
 
 ## 2026-09 签到 403 修复说明
@@ -70,7 +70,15 @@
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
 ## 推送通知
 
-**默认**：走青龙面板 **系统设置 → 通知**（`USER_USE_QL_NOTIFY = True`）。
+青龙有两套互不同步的通知：
+
+| 方式 | 配置位置 | 本脚本调用 |
+|---|---|---|
+| **面板通知（默认）** | 系统设置 → 通知（如 Bark） | `QLAPI.systemNotify`（需用**定时任务**跑，才会注入 QLAPI） |
+| `notify.py` / 环境变量 | `BARK_PUSH` 等环境变量 | 仅在无 QLAPI 时回退到 `notify.send` |
+| **脚本直推** | 脚本顶部 `USER_PUSH_*` | 本脚本自己请求各渠道 |
+
+**默认**：`USER_USE_QL_NOTIFY = True`，优先走面板通知。在青龙里配好 Bark 后，用定时任务运行即可，不必再配 `BARK_PUSH`。
 
 **额外 Bark（脚本直推）**：在 `ql_lynk.py` 顶部填写即可，不用环境变量：
 
@@ -78,11 +86,11 @@
 USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
 ```
 
-二者独立：青龙通知用面板里配的渠道；`USER_PUSH_BARK_URL` 只走脚本直推，不写入青龙的 `BARK_PUSH`。
+二者独立：`USER_PUSH_BARK_URL` 不写入青龙的 `BARK_PUSH`，也不会和面板配置混用。
 
-日志含义：`青龙通知: OK (...)` = 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
+日志含义：`青龙通知: OK (...)` = `systemNotify` / 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
 
-> 青龙 `notify.py` 默认会请求一言 `v1.hitokoto.cn`，SSL 失败会拖垮推送。本脚本默认关闭一言（`HITOKOTO=false`）。
+> 回退到 `notify.py` 时会默认关闭一言（`HITOKOTO=false`），避免 `v1.hitokoto.cn` SSL 失败拖垮推送。
 
 **如何抓取 `refreshToken` 与 `deviceId`**：
 1. 手机抓包（Charles / Fiddler / 小黄鸟等），过滤域名 `app-services.lynkco.com.cn`。

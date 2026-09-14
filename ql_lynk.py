@@ -33,7 +33,7 @@
   PUSH_SERVERCHAN_KEY    Server酱 SendKey
   PUSH_PUSHPLUS_TOKEN    PushPlus Token
   PUSH_BARK_URL          Bark 推送 URL
-  LYNK_USE_QL_NOTIFY     0/false 关闭青龙内置通知 (默认启用, 自动调用 notify.send)
+  LYNK_USE_QL_NOTIFY     0/false 关闭青龙内置通知 (默认启用, 优先 QLAPI.systemNotify)
 
 青龙定时: 0 9 * * *  (每天 9 点)
 """
@@ -113,10 +113,10 @@ USER_TOKEN_B = ""
 USER_SHARE_CONTENT_ID = "2072260486405246976"
 
 # ---------- 推送 ----------
-# 默认走青龙面板「系统设置 → 通知」(True). 一般不用改
+# 默认走青龙面板「系统设置 → 通知」(True). 对应 QLAPI.systemNotify, 不是环境变量 BARK_PUSH
 USER_USE_QL_NOTIFY = True
 # 额外脚本直推 Bark (可选): 填完整 URL 或设备码, 例 https://api.day.app/你的Key/ 或 你的Key
-# 与青龙通知独立; 青龙里没配好渠道时, 靠这里也能收到 Bark
+# 与面板通知独立; 面板没配好 / 非定时任务跑时, 靠这里也能收到 Bark
 USER_PUSH_BARK_URL = ""
 # 以下为可选脚本直推渠道 (留空不用)
 USER_PUSH_WECOM_WEBHOOK = ""      # 企业微信 webhook
@@ -696,8 +696,31 @@ def apply_user_push_config():
             os.environ[env_key] = val.strip() if isinstance(val, str) else str(val)
 
 
+def _ql_notify_enabled():
+    """是否启用青龙内置通知. USER_CONFIG 优先, LYNK_USE_QL_NOTIFY 可覆盖."""
+    use_ql = USER_USE_QL_NOTIFY
+    env_flag = os.environ.get("LYNK_USE_QL_NOTIFY", "").strip().lower()
+    if env_flag in ("0", "false", "no", "off"):
+        return False
+    if env_flag in ("1", "true", "yes", "on"):
+        return True
+    return bool(use_ql)
+
+
+def _get_qlapi():
+    """获取青龙任务注入的 QLAPI (builtins / 全局). 非定时任务环境通常为 None."""
+    try:
+        import builtins
+        api = getattr(builtins, "QLAPI", None)
+        if api is not None:
+            return api
+    except Exception:
+        pass
+    return globals().get("QLAPI")
+
+
 def _ql_notify_channel_names():
-    """青龙 notify.push_config 里已启用的渠道名列表."""
+    """青龙 notify.push_config 里已启用的渠道名列表 (环境变量体系, 非面板 systemNotify)."""
     try:
         import notify as _ql_notify  # type: ignore
         cfg = getattr(_ql_notify, "push_config", None) or {}
@@ -734,29 +757,15 @@ def _ql_notify_channel_names():
 
 
 def _load_ql_notify_send():
-    """加载青龙面板内置 notify.send (若存在).
+    """加载青龙 notify.send (读环境变量 BARK_PUSH 等, 与面板「系统设置→通知」不是同一套).
 
-    青龙在「系统设置 → 通知」里配置的渠道, 由 /ql 下的 notify.py 统一发送.
-    脚本放在青龙里跑时优先复用, 避免再单独配 PUSH_* .
+    仅作 systemNotify 不可用时的回退.
     """
-    # USER_CONFIG 优先, 环境变量可覆盖
-    use_ql = USER_USE_QL_NOTIFY
-    env_flag = os.environ.get("LYNK_USE_QL_NOTIFY", "").strip().lower()
-    if env_flag in ("0", "false", "no", "off"):
-        use_ql = False
-    elif env_flag in ("1", "true", "yes", "on"):
-        use_ql = True
-    if not use_ql:
-        return None
-
     # 默认关闭一言: notify.py 会请求 v1.hitokoto.cn, 出网/SSL 失败会拖垮整次推送.
-    # 官方判断是 hitokoto != "false" 才拉取; 必须传字符串 "false".
-    # 设 LYNK_HITOKOTO=1 可保留一言.
     want_hitokoto = os.environ.get("LYNK_HITOKOTO", "").strip().lower() in ("1", "true", "yes", "on")
     if not want_hitokoto:
         os.environ["HITOKOTO"] = "false"
 
-    # 把常见青龙路径加入 sys.path, 再尝试 import notify
     candidates = [
         os.path.dirname(os.path.abspath(__file__)),
         "/ql/scripts",
@@ -777,12 +786,37 @@ def _load_ql_notify_send():
     return None
 
 
-def _call_ql_notify(ql_send, title, md_text):
-    """调用青龙 notify.send, 并强制关闭一言以免 hitokoto.cn SSL 失败导致整次推送中断.
+def _call_ql_system_notify(title, content):
+    """走青龙面板「系统设置 → 通知」(DB 里的 barkPush 等).
 
-    青龙 sample/notify.py 默认 HITOKOTO=True, 发送前会同步请求 https://v1.hitokoto.cn/ ;
-    该站 SSL/出网失败时, one() 抛异常会让整次 send 失败 (你日志里的 SSLEOFError).
-    官方关闭方式: 环境变量 HITOKOTO=false (必须是字符串 false).
+    对应官方 demo: QLAPI.systemNotify({"title": ..., "content": ...})
+    与 QLAPI.notify / notify.send (环境变量 BARK_PUSH) 互不同步.
+
+    返回:
+      None           — QLAPI 不可用 (非青龙任务环境)
+      (True, detail) — 已调用
+      (False, err)   — 调用失败
+    """
+    api = _get_qlapi()
+    if api is None:
+        return None
+    fn = getattr(api, "systemNotify", None)
+    if not callable(fn):
+        return None
+    try:
+        ret = fn({"title": title, "content": content})
+        detail = "OK" if ret is None else str(ret)
+        # 部分青龙版本失败时返回带 fail/error 的字符串, 尽量识别
+        low = detail.lower()
+        if any(x in low for x in ("fail", "error", "未配置", "没有可", "未启用")):
+            return False, detail
+        return True, detail
+    except Exception as e:
+        return False, str(e)
+
+
+def _call_ql_notify(ql_send, title, md_text):
+    """回退: 调用青龙 notify.send (环境变量渠道), 并强制关闭一言.
 
     返回 (ok: bool, detail: str)
     """
@@ -791,18 +825,15 @@ def _call_ql_notify(ql_send, title, md_text):
         import notify as _ql_notify  # type: ignore
         cfg = getattr(_ql_notify, "push_config", None)
     except Exception:
-        _ql_notify = None
         cfg = None
 
-    if isinstance(cfg, dict):
-        if not want_hitokoto:
-            os.environ["HITOKOTO"] = "false"
-            cfg["HITOKOTO"] = "false"
+    if isinstance(cfg, dict) and not want_hitokoto:
+        os.environ["HITOKOTO"] = "false"
+        cfg["HITOKOTO"] = "false"
 
     channels = _ql_notify_channel_names()
     if not channels:
-        # 青龙没配渠道不算致命: 用户可用 USER_PUSH_BARK_URL 脚本直推
-        return False, "跳过(青龙通知未配置渠道; 可在面板配 BARK_PUSH, 或填 USER_PUSH_BARK_URL 脚本直推)"
+        return False, "跳过(notify.py 无环境变量渠道; 面板通知请用定时任务跑以启用 QLAPI.systemNotify, 或填 USER_PUSH_BARK_URL)"
 
     try:
         if not want_hitokoto:
@@ -821,8 +852,9 @@ def push_text(title, md_text):
     """多渠道推送, 返回结果汇总字符串.
 
     优先级:
-      1. 青龙内置 notify.send (系统设置里配好的通知, 默认启用)
-      2. 脚本自带 PUSH_* 环境变量渠道 (企业微信/钉钉/飞书/TG/Server酱/PushPlus/Bark)
+      1. QLAPI.systemNotify — 青龙「系统设置 → 通知」(面板 Bark 等, 默认启用)
+      2. notify.send — 仅当 systemNotify 不可用时回退 (读环境变量 BARK_PUSH 等)
+      3. 脚本自带 PUSH_* / USER_PUSH_* 直推渠道
 
     不同渠道语法差异:
       - 企业微信 / 钉钉 / Server酱 / 飞书: HTML <a href="URL">text</a>
@@ -832,22 +864,36 @@ def push_text(title, md_text):
     html_text = _md_to_html(md_text)
     sc_html = _md_to_serverchan_html(md_text)
 
-    # 0. 青龙面板内置通知 (默认开启; 无渠道时跳过并提示)
-    ql_send = _load_ql_notify_send()
-    if ql_send:
-        ok, detail = _call_ql_notify(ql_send, title, md_text)
-        if ok:
-            results.append(f"青龙通知: OK ({detail})")
-        elif detail.startswith("跳过"):
-            results.append(f"青龙通知: {detail}")
-        else:
-            err = detail
-            if "hitokoto" in err.lower():
-                results.append(
-                    f"青龙通知: X {err} (一言 API 异常; 脚本已默认关闭一言, 请设 HITOKOTO=false)"
-                )
+    # 0. 青龙面板系统通知 (默认开启)
+    if _ql_notify_enabled():
+        sys_ret = _call_ql_system_notify(title, md_text)
+        if sys_ret is not None:
+            ok, detail = sys_ret
+            if ok:
+                results.append(f"青龙通知: OK ({detail})")
             else:
-                results.append(f"青龙通知: X {err}")
+                results.append(f"青龙通知: X {detail}")
+        else:
+            # 非定时任务 / 无 QLAPI: 回退到 notify.send (环境变量体系)
+            ql_send = _load_ql_notify_send()
+            if ql_send:
+                ok, detail = _call_ql_notify(ql_send, title, md_text)
+                if ok:
+                    results.append(f"青龙notify: OK ({detail})")
+                elif detail.startswith("跳过"):
+                    results.append(f"青龙通知: {detail}")
+                else:
+                    err = detail
+                    if "hitokoto" in err.lower():
+                        results.append(
+                            f"青龙notify: X {err} (一言 API 异常; 脚本已默认关闭一言, 请设 HITOKOTO=false)"
+                        )
+                    else:
+                        results.append(f"青龙notify: X {err}")
+            else:
+                results.append(
+                    "青龙通知: 跳过(无 QLAPI; 请用青龙定时任务运行以走面板通知, 或填 USER_PUSH_BARK_URL)"
+                )
 
     # 1. 企业微信 (msgtype=markdown, 不渲染 <a>, 用 [text](url) + 末尾附 raw URL 兜底)
     url = os.environ.get("PUSH_WECOM_WEBHOOK", "").strip()
