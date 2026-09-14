@@ -70,13 +70,28 @@
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
 ## 推送通知
 
-**推荐（青龙）**：在青龙面板 **系统设置 → 通知** 里配置任意渠道即可。脚本会自动调用青龙内置的 `notify.send`，无需再配 `PUSH_*`。
+### 方式 A：脚本顶部 USER_CONFIG（推荐，不用环境变量）
 
-日志出现 `青龙通知: OK` 即表示走了面板内置推送。若要关闭：环境变量 `LYNK_USE_QL_NOTIFY=0`。
+编辑 `ql_lynk.py` 顶部：
+
+```python
+USER_USE_QL_NOTIFY = False          # 不想走青龙内置通知时改 False
+USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
+# 也可填企业微信 / 钉钉 / 飞书 / Telegram / Server酱 / PushPlus
+```
+
+### 方式 B：青龙「系统设置 → 通知」
+
+脚本默认会调用青龙 `notify.send`。注意 Python 通知变量名是 **`BARK_PUSH`**（不是本脚本的 `PUSH_BARK_URL`）。  
+若日志出现 `无推送渠道`，说明 `notify.py` 没读到渠道变量——改用方式 A 更省事。
+
+日志 `青龙通知: OK (Bark)` 表示走了面板内置推送；`Bark: OK` 表示脚本直推 Bark。
+
+关闭青龙内置通知：`USER_USE_QL_NOTIFY = False`，或环境变量 `LYNK_USE_QL_NOTIFY=0`。
 
 > 说明：青龙 `notify.py` 默认会请求「一言」`v1.hitokoto.cn`，该站 SSL/出网失败会导致整次推送失败。本脚本默认关闭一言（等价于 `HITOKOTO=false`）；若仍要一言，设 `LYNK_HITOKOTO=1`。
 
-**可选（脚本自带渠道）**：不在青龙里跑、或还想额外推一路时，再配下列环境变量（可与青龙通知并存）：
+### 方式 C：环境变量 `PUSH_*`（可选）
 
 | 变量 | 说明 | 必填 |
 |---|---|---|

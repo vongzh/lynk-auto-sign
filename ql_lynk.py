@@ -111,11 +111,29 @@ USER_AUTO_SHARE = False
 USER_TOKEN_B = ""
 # 分享文章 ID (默认热门 ID)
 USER_SHARE_CONTENT_ID = "2072260486405246976"
-# 企业微信机器人 webhook (留空不推送; 想配多个推送渠道就在下面再加)
+
+# ---------- 推送 (脚本直推, 不依赖青龙环境变量; 留空=不启用该渠道) ----------
+# 是否同时走青龙面板「系统设置 → 通知」(True/False). 只想用下面脚本渠道时改 False
+USER_USE_QL_NOTIFY = True
+# 企业微信机器人 webhook, 例: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
 USER_PUSH_WECOM_WEBHOOK = ""
+# 钉钉机器人 webhook
+USER_PUSH_DINGTALK_WEBHOOK = ""
+# 飞书机器人 webhook
+USER_PUSH_FEISHU_WEBHOOK = ""
+# Telegram
+USER_PUSH_TG_BOT_TOKEN = ""
+USER_PUSH_TG_CHAT_ID = ""
+# Server酱 SendKey
+USER_PUSH_SERVERCHAN_KEY = ""
+# PushPlus Token
+USER_PUSH_PUSHPLUS_TOKEN = ""
+# Bark: 填完整 URL 或设备码均可
+#   例: https://api.day.app/你的Key/   或   你的Key
+USER_PUSH_BARK_URL = ""
 # ==================== 配置结束 ====================
 
-# 优先级: 命令行参数 > 环境变量 (LYNK_*) > 脚本顶部 USER_CONFIG
+# 优先级: 命令行参数 > 环境变量 (LYNK_* / PUSH_*) > 脚本顶部 USER_CONFIG
 
 # 分享每日上限 (后端限频, 超过会报"今日已分享")
 SHARE_DAILY_LIMIT = 1
@@ -653,14 +671,89 @@ def _md_to_serverchan_html(text):
     return text
 
 
+def _normalize_bark_url(value):
+    """接受完整 Bark URL 或纯设备码, 统一成可请求的 URL."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if v.startswith("http://") or v.startswith("https://"):
+        return v if v.endswith("/") else v + "/"
+    return f"https://api.day.app/{v}/"
+
+
+def apply_user_push_config():
+    """把脚本顶部 USER_PUSH_* 写入环境变量 (不覆盖已有环境变量)."""
+    mapping = {
+        "PUSH_WECOM_WEBHOOK": USER_PUSH_WECOM_WEBHOOK,
+        "PUSH_DINGTALK_WEBHOOK": USER_PUSH_DINGTALK_WEBHOOK,
+        "PUSH_FEISHU_WEBHOOK": USER_PUSH_FEISHU_WEBHOOK,
+        "PUSH_TG_BOT_TOKEN": USER_PUSH_TG_BOT_TOKEN,
+        "PUSH_TG_CHAT_ID": USER_PUSH_TG_CHAT_ID,
+        "PUSH_SERVERCHAN_KEY": USER_PUSH_SERVERCHAN_KEY,
+        "PUSH_PUSHPLUS_TOKEN": USER_PUSH_PUSHPLUS_TOKEN,
+        "PUSH_BARK_URL": _normalize_bark_url(USER_PUSH_BARK_URL),
+    }
+    for env_key, val in mapping.items():
+        if val and not os.environ.get(env_key, "").strip():
+            os.environ[env_key] = val.strip() if isinstance(val, str) else str(val)
+
+    # 同步到青龙 notify 认识的变量名 (BARK_PUSH), 方便只改 USER_CONFIG 也能喂给 ql 通知
+    bark = os.environ.get("PUSH_BARK_URL", "").strip()
+    if bark and not os.environ.get("BARK_PUSH", "").strip():
+        os.environ["BARK_PUSH"] = bark.rstrip("/")
+
+
+def _ql_notify_channel_names():
+    """青龙 notify.push_config 里已启用的渠道名列表."""
+    try:
+        import notify as _ql_notify  # type: ignore
+        cfg = getattr(_ql_notify, "push_config", None) or {}
+    except Exception:
+        return []
+    # 与 sample/notify.py add_notify_function 判定一致的关键字段
+    checks = [
+        ("Bark", "BARK_PUSH"),
+        ("钉钉", "DD_BOT_TOKEN"),
+        ("飞书", "FSKEY"),
+        ("企业微信应用", "QYWX_AM"),
+        ("企业微信机器人", "QYWX_KEY"),
+        ("Server酱", "PUSH_KEY"),
+        ("PushPlus", "PUSH_PLUS_TOKEN"),
+        ("Telegram", "TG_BOT_TOKEN"),
+        ("iGot", "IGOT_PUSH_KEY"),
+        ("Gotify", "GOTIFY_URL"),
+        ("邮件", "SMTP_SERVER"),
+        ("Webhook", "WEBHOOK_URL"),
+        ("Console", "CONSOLE"),
+    ]
+    names = []
+    for label, key in checks:
+        val = cfg.get(key)
+        if key == "CONSOLE":
+            if val in (True, "true", "1", "True"):
+                names.append(label)
+        elif val:
+            names.append(label)
+    # Telegram 还需要 TG_USER_ID
+    if "Telegram" in names and not (cfg.get("TG_USER_ID") or cfg.get("TG_CHAT_ID")):
+        names = [n for n in names if n != "Telegram"]
+    return names
+
+
 def _load_ql_notify_send():
     """加载青龙面板内置 notify.send (若存在).
 
     青龙在「系统设置 → 通知」里配置的渠道, 由 /ql 下的 notify.py 统一发送.
     脚本放在青龙里跑时优先复用, 避免再单独配 PUSH_* .
     """
-    disabled = os.environ.get("LYNK_USE_QL_NOTIFY", "1").strip().lower() in ("0", "false", "no", "off")
-    if disabled:
+    # USER_CONFIG 优先, 环境变量可覆盖
+    use_ql = USER_USE_QL_NOTIFY
+    env_flag = os.environ.get("LYNK_USE_QL_NOTIFY", "").strip().lower()
+    if env_flag in ("0", "false", "no", "off"):
+        use_ql = False
+    elif env_flag in ("1", "true", "yes", "on"):
+        use_ql = True
+    if not use_ql:
         return None
 
     # 默认关闭一言: notify.py 会请求 v1.hitokoto.cn, 出网/SSL 失败会拖垮整次推送.
@@ -697,24 +790,44 @@ def _call_ql_notify(ql_send, title, md_text):
     青龙 sample/notify.py 默认 HITOKOTO=True, 发送前会同步请求 https://v1.hitokoto.cn/ ;
     该站 SSL/出网失败时, one() 抛异常会让整次 send 失败 (你日志里的 SSLEOFError).
     官方关闭方式: 环境变量 HITOKOTO=false (必须是字符串 false).
+
+    返回 (ok: bool, detail: str)
     """
     want_hitokoto = os.environ.get("LYNK_HITOKOTO", "").strip().lower() in ("1", "true", "yes", "on")
-    if not want_hitokoto:
-        os.environ["HITOKOTO"] = "false"
-        # notify 在 import 时把配置写进 push_config, 仅改环境变量可能不够
-        try:
-            import notify as _ql_notify  # type: ignore
-            cfg = getattr(_ql_notify, "push_config", None)
-            if isinstance(cfg, dict):
-                cfg["HITOKOTO"] = "false"
-        except Exception:
-            pass
-        # 新版 send(title, content, **kwargs) 可直接覆盖
-        try:
-            return ql_send(title, md_text, HITOKOTO="false")
-        except TypeError:
-            pass  # 旧版无 kwargs, 依赖上面的 push_config / 环境变量
-    return ql_send(title, md_text)
+    try:
+        import notify as _ql_notify  # type: ignore
+        cfg = getattr(_ql_notify, "push_config", None)
+    except Exception:
+        _ql_notify = None
+        cfg = None
+
+    if isinstance(cfg, dict):
+        if not want_hitokoto:
+            os.environ["HITOKOTO"] = "false"
+            cfg["HITOKOTO"] = "false"
+        # 脚本 USER_CONFIG / PUSH_BARK_URL 同步进青龙 notify 认识的 BARK_PUSH
+        bark = os.environ.get("BARK_PUSH") or os.environ.get("PUSH_BARK_URL")
+        if bark and not cfg.get("BARK_PUSH"):
+            cfg["BARK_PUSH"] = bark.rstrip("/")
+
+    channels = _ql_notify_channel_names()
+    if not channels:
+        return False, (
+            "无推送渠道 — 青龙 notify 未读到 BARK_PUSH 等变量。"
+            "可在脚本顶部填 USER_PUSH_BARK_URL, 或把 USER_USE_QL_NOTIFY=False 改走脚本直推"
+        )
+
+    try:
+        if not want_hitokoto:
+            try:
+                ql_send(title, md_text, HITOKOTO="false")
+            except TypeError:
+                ql_send(title, md_text)
+        else:
+            ql_send(title, md_text)
+    except Exception as e:
+        return False, str(e)
+    return True, "+".join(channels)
 
 
 def push_text(title, md_text):
@@ -735,17 +848,17 @@ def push_text(title, md_text):
     # 0. 青龙面板内置通知 (notify.py)
     ql_send = _load_ql_notify_send()
     if ql_send:
-        try:
-            _call_ql_notify(ql_send, title, md_text)
-            results.append("青龙通知: OK")
-        except Exception as e:
-            err = str(e)
+        ok, detail = _call_ql_notify(ql_send, title, md_text)
+        if ok:
+            results.append(f"青龙通知: OK ({detail})")
+        else:
+            err = detail
             if "hitokoto" in err.lower():
                 results.append(
-                    f"青龙通知: X {e} (一言 API 异常; 脚本已默认关闭一言, 请更新到最新脚本或在青龙环境变量设 HITOKOTO=false)"
+                    f"青龙通知: X {err} (一言 API 异常; 脚本已默认关闭一言, 请更新到最新脚本或在青龙环境变量设 HITOKOTO=false)"
                 )
             else:
-                results.append(f"青龙通知: X {e}")
+                results.append(f"青龙通知: X {err}")
 
     # 1. 企业微信 (msgtype=markdown, 不渲染 <a>, 用 [text](url) + 末尾附 raw URL 兜底)
     url = os.environ.get("PUSH_WECOM_WEBHOOK", "").strip()
@@ -838,7 +951,7 @@ def push_text(title, md_text):
             results.append(f"PushPlus: X {e}")
 
     # 7. Bark (URL 拼接, body 支持 markdown)
-    bark_url = os.environ.get("PUSH_BARK_URL", "").strip()
+    bark_url = _normalize_bark_url(os.environ.get("PUSH_BARK_URL", ""))
     if bark_url:
         try:
             sep = "&" if "?" in bark_url else "?"
@@ -848,7 +961,7 @@ def push_text(title, md_text):
         except Exception as e:
             results.append(f"Bark: X {e}")
 
-    return " | ".join(results) if results else "(未配置推送渠道: 可在青龙「通知」里配置, 或设 PUSH_* 环境变量)"
+    return " | ".join(results) if results else "(未配置推送渠道: 在脚本顶部 USER_PUSH_* 填写, 或配青龙通知 / PUSH_* 环境变量)"
 
 
 # ==================== 分享任务 (合并到主流程) ====================
@@ -1182,9 +1295,8 @@ def main():
     auto_share_env = os.environ.get("LYNK_AUTO_SHARE", "").strip().lower() in ("1", "true", "yes", "on")
     auto_share = args.auto_share or auto_share_env or USER_AUTO_SHARE
 
-    # 推送渠道: 命令行没暴露, 直接读 USER_CONFIG + 环境变量
-    if not os.environ.get("PUSH_WECOM_WEBHOOK") and USER_PUSH_WECOM_WEBHOOK:
-        os.environ["PUSH_WECOM_WEBHOOK"] = USER_PUSH_WECOM_WEBHOOK
+    # 推送渠道: USER_CONFIG → 环境变量 (不覆盖已有 env)
+    apply_user_push_config()
 
     # 缓存开关 (--no-cache 强制 refresh)
     if args.no_cache:
