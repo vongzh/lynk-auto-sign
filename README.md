@@ -32,6 +32,14 @@
 
 今日是否已签改查 `/up/api/v1/user/sign/day/info`（`signStatus=1` 表示已签）。
 
+### 网络 / DNS 失败（`Failed to resolve` / `NameResolutionError`）
+若日志出现无法解析 `app-services.lynkco.com.cn` 或 `app-api-gw-toc.lynkco.com`，属于**青龙容器/宿主机出网或 DNS 问题**，不是 token 失效。可尝试：
+1. 在容器内执行 `nslookup app-api-gw-toc.lynkco.com` / `ping` 确认能否解析
+2. 为 Docker/青龙配置可靠 DNS（如 `223.5.5.5`、`8.8.8.8`）并重启容器
+3. 确认未拦截上述域名的代理/防火墙
+
+脚本对 DNS/连接抖动会自动重试（可用 `LYNK_HTTP_RETRIES` / `LYNK_HTTP_TIMEOUT` 调整）。
+
 ## 依赖
 - Python 3.8+
 - `requests`（脚本检测到缺失时会自动 `pip install requests`）
