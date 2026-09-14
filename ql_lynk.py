@@ -33,6 +33,7 @@
   PUSH_SERVERCHAN_KEY    Server酱 SendKey
   PUSH_PUSHPLUS_TOKEN    PushPlus Token
   PUSH_BARK_URL          Bark 推送 URL
+  LYNK_USE_QL_NOTIFY     0/false 关闭青龙内置通知 (默认启用, 自动调用 notify.send)
 
 青龙定时: 0 9 * * *  (每天 9 点)
 """
@@ -652,8 +653,43 @@ def _md_to_serverchan_html(text):
     return text
 
 
+def _load_ql_notify_send():
+    """加载青龙面板内置 notify.send (若存在).
+
+    青龙在「系统设置 → 通知」里配置的渠道, 由 /ql 下的 notify.py 统一发送.
+    脚本放在青龙里跑时优先复用, 避免再单独配 PUSH_* .
+    """
+    disabled = os.environ.get("LYNK_USE_QL_NOTIFY", "1").strip().lower() in ("0", "false", "no", "off")
+    if disabled:
+        return None
+
+    # 把常见青龙路径加入 sys.path, 再尝试 import notify
+    candidates = [
+        os.path.dirname(os.path.abspath(__file__)),
+        "/ql/scripts",
+        "/ql/data/scripts",
+        "/ql/repo",
+        "/ql",
+    ]
+    for p in candidates:
+        if p and os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
+
+    try:
+        from notify import send as ql_send  # type: ignore
+        if callable(ql_send):
+            return ql_send
+    except Exception:
+        pass
+    return None
+
+
 def push_text(title, md_text):
     """多渠道推送, 返回结果汇总字符串.
+
+    优先级:
+      1. 青龙内置 notify.send (系统设置里配好的通知, 默认启用)
+      2. 脚本自带 PUSH_* 环境变量渠道 (企业微信/钉钉/飞书/TG/Server酱/PushPlus/Bark)
 
     不同渠道语法差异:
       - 企业微信 / 钉钉 / Server酱 / 飞书: HTML <a href="URL">text</a>
@@ -662,6 +698,15 @@ def push_text(title, md_text):
     results = []
     html_text = _md_to_html(md_text)
     sc_html = _md_to_serverchan_html(md_text)
+
+    # 0. 青龙面板内置通知 (notify.py)
+    ql_send = _load_ql_notify_send()
+    if ql_send:
+        try:
+            ql_send(title, md_text)
+            results.append("青龙通知: OK")
+        except Exception as e:
+            results.append(f"青龙通知: X {e}")
 
     # 1. 企业微信 (msgtype=markdown, 不渲染 <a>, 用 [text](url) + 末尾附 raw URL 兜底)
     url = os.environ.get("PUSH_WECOM_WEBHOOK", "").strip()
@@ -764,7 +809,7 @@ def push_text(title, md_text):
         except Exception as e:
             results.append(f"Bark: X {e}")
 
-    return " | ".join(results) if results else "(未配置推送渠道)"
+    return " | ".join(results) if results else "(未配置推送渠道: 可在青龙「通知」里配置, 或设 PUSH_* 环境变量)"
 
 
 # ==================== 分享任务 (合并到主流程) ====================
