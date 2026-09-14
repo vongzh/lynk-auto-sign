@@ -317,6 +317,65 @@ def parse_expiry(ts_val):
     return None
 
 
+# ==================== 网络重试 ====================
+# 青龙面板偶发 DNS NameResolutionError(-3 Try again) / 连接抖动, 签名请求每次重试需重新生成 nonce
+HTTP_TIMEOUT = int(os.environ.get("LYNK_HTTP_TIMEOUT", "20") or "20")
+HTTP_RETRIES = int(os.environ.get("LYNK_HTTP_RETRIES", "3") or "3")
+HTTP_RETRY_BASE_SEC = float(os.environ.get("LYNK_HTTP_RETRY_BASE", "2") or "2")
+
+
+def _is_retryable_network_error(exc):
+    """DNS 解析失败 / 连接中断 / 超时 视为可重试"""
+    if isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+        return True
+    name = type(exc).__name__
+    msg = str(exc)
+    needles = (
+        "NameResolutionError",
+        "Failed to resolve",
+        "Temporary failure in name resolution",
+        "Try again",
+        "Connection reset",
+        "Connection aborted",
+        "RemoteDisconnected",
+        "Read timed out",
+    )
+    return name in ("NameResolutionError", "ConnectTimeoutError", "ReadTimeout") or any(n in msg for n in needles)
+
+
+def _format_network_hint(exc_or_msg):
+    text = str(exc_or_msg)
+    if any(k in text for k in ("NameResolutionError", "Failed to resolve", "name resolution")):
+        return (
+            "DNS 解析失败: 青龙容器/宿主机当前无法解析领克域名 "
+            "(app-services.lynkco.com.cn / app-api-gw-toc.lynkco.com)。"
+            "请检查容器网络、DNS(如 223.5.5.5/8.8.8.8)、代理与出网策略后重试。"
+        )
+    if any(k in text for k in ("Connection", "timed out", "Timeout", "Max retries")):
+        return "网络连接失败: 请检查青龙面板出网是否可达领克 API, 或稍后重试。"
+    return ""
+
+
+def request_with_retry(build_request, retries=None, what="请求"):
+    """执行 build_request() 返回的 requests.Response; 网络抖动时指数退避重试。
+
+    build_request: 无参回调, 每次调用应重新生成签名头 (nonce/timestamp)。
+    """
+    retries = HTTP_RETRIES if retries is None else retries
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return build_request()
+        except Exception as e:
+            last_exc = e
+            if not _is_retryable_network_error(e) or attempt >= retries:
+                raise
+            delay = HTTP_RETRY_BASE_SEC * (2 ** attempt)
+            log("WARN", f"{what} 网络异常, {delay:.0f}s 后重试 ({attempt + 1}/{retries}): {type(e).__name__}: {e}")
+            time.sleep(delay)
+    raise last_exc
+
+
 # ==================== Token 管理 ====================
 def refresh_lynk_token(rt, device_id):
     """refresh 接口换 accessToken + refreshToken"""
@@ -341,7 +400,10 @@ def refresh_lynk_token(rt, device_id):
         "appVersion": "4.2.0",
     }
     try:
-        r = requests.get(REFRESH_URL, params=params, headers=headers, timeout=20)
+        def _do():
+            return requests.get(REFRESH_URL, params=params, headers=headers, timeout=HTTP_TIMEOUT)
+
+        r = request_with_retry(_do, what="refreshToken")
         r.raise_for_status()
         data = r.json()
         if data.get("code") != "success":
@@ -354,7 +416,11 @@ def refresh_lynk_token(rt, device_id):
             "refreshExpireAt": dto.get("refreshExpireAt"),
         }, None
     except Exception as e:
-        return None, f"refresh 异常: {type(e).__name__}: {e}"
+        hint = _format_network_hint(e)
+        detail = f"refresh 异常: {type(e).__name__}: {e}"
+        if hint:
+            detail = f"{detail}\n  → {hint}"
+        return None, detail
 
 
 def get_access_token(rt_or_at, device_id, force=False):
@@ -420,44 +486,58 @@ def is_api_ok(resp):
 
 
 def lynk_call(method, path, token, body=None, params=None):
-    """H5 签名请求 (查询类)"""
-    sig = build_sig(method, path, params)
-    headers = {
-        "token": token,
-        "content-type": "application/json",
-        **sig,
-    }
-    try:
-        url = f"{API_BASE}{path}"
+    """H5 签名请求 (查询类); 网络失败自动重试并重新签名"""
+    url = f"{API_BASE}{path}"
+
+    def _do():
+        sig = build_sig(method, path, params)
+        headers = {
+            "token": token,
+            "content-type": "application/json",
+            **sig,
+        }
         if method == "GET":
-            r = requests.get(url, headers=headers, params=params, timeout=20)
-        else:
-            r = requests.post(url, headers=headers, json=body or {}, timeout=20)
+            return requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
+        return requests.post(url, headers=headers, json=body or {}, timeout=HTTP_TIMEOUT)
+
+    try:
+        r = request_with_retry(_do, what=f"{method} {path}")
         return _parse_api_response(r)
     except Exception as e:
-        return {"code": "EXCEPTION", "message": str(e)}
+        hint = _format_network_hint(e)
+        msg = str(e)
+        if hint:
+            msg = f"{msg} | {hint}"
+        return {"code": "EXCEPTION", "message": msg}
 
 
 def lynk_native_call(method, path, token, body_bytes=None):
-    """原生 SDK 签名请求 (签到 upgrade 等写接口)"""
+    """原生 SDK 签名请求 (签到 upgrade 等写接口); 网络失败自动重试并重新签名"""
     body = body_bytes if body_bytes is not None else (b"{}" if method.upper() == "POST" else None)
-    sig = build_native_sig(method, path, body=body)
-    headers = {
-        "token": token,
-        "ca_version": "1",
-        "x-requiretoken": "false",
-        "User-Agent": NATIVE_ANDROID_UA,
-        **sig,
-    }
-    try:
-        url = f"{API_BASE}{path}"
+    url = f"{API_BASE}{path}"
+
+    def _do():
+        sig = build_native_sig(method, path, body=body)
+        headers = {
+            "token": token,
+            "ca_version": "1",
+            "x-requiretoken": "false",
+            "User-Agent": NATIVE_ANDROID_UA,
+            **sig,
+        }
         if method.upper() == "GET":
-            r = requests.get(url, headers=headers, timeout=20)
-        else:
-            r = requests.post(url, headers=headers, data=body, timeout=20)
+            return requests.get(url, headers=headers, timeout=HTTP_TIMEOUT)
+        return requests.post(url, headers=headers, data=body, timeout=HTTP_TIMEOUT)
+
+    try:
+        r = request_with_retry(_do, what=f"native {method} {path}")
         return _parse_api_response(r)
     except Exception as e:
-        return {"code": "EXCEPTION", "message": str(e)}
+        hint = _format_network_hint(e)
+        msg = str(e)
+        if hint:
+            msg = f"{msg} | {hint}"
+        return {"code": "EXCEPTION", "message": msg}
 
 
 def lynk_sign_day_info(token):
@@ -757,6 +837,9 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
     if not access_token:
         msg = source if source.startswith("refresh_err") else "未知错误"
         log("ERR", f"获取 accessToken 失败: {msg}")
+        hint = _format_network_hint(msg)
+        if hint:
+            log("ERR", hint)
         push_text("领克签到失败", f"**❌ 续 token 失败**\n\n```\n{msg}\n```")
         return 2
 
