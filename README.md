@@ -14,7 +14,7 @@
 - 领克 APP 每日自动签到（连续 7 / 30 / 85 / 365 天进度、成长等级与成长值查询）
 - 签到任务进度查询
 - H5 分享链接生成（手动发微信给好友点击，主账号 +5 能量体）；可选自动分享（需配置 B 账号）
-- 多通道 Markdown 推送：企业微信 / 钉钉 / 飞书 / Telegram / Server 酱 / PushPlus / Bark
+- 多通道 Markdown 推送：优先复用青龙面板「通知」；也可另配企业微信 / 钉钉 / 飞书 / Telegram / Server 酱 / PushPlus / Bark
 - `accessToken` 本地缓存（与 App 行为一致，避免每次强制 refresh）
 
 ## 2026-09 签到 403 修复说明
@@ -68,6 +68,16 @@
 | `LYNK_AUTO_SHARE` | `1`/`true` 启用自动分享（默认 false，仅生成 URL） | 可选 |
 | `LYNK_NATIVE_APP_KEY` / `LYNK_NATIVE_APP_SECRET` | 原生签到签名密钥（一般无需改，脚本已内置） | 可选 |
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
+## 推送通知
+
+**推荐（青龙）**：在青龙面板 **系统设置 → 通知** 里配置任意渠道即可。脚本会自动调用青龙内置的 `notify.send`，无需再配 `PUSH_*`。
+
+日志出现 `青龙通知: OK` 即表示走了面板内置推送。若要关闭：环境变量 `LYNK_USE_QL_NOTIFY=0`。
+
+**可选（脚本自带渠道）**：不在青龙里跑、或还想额外推一路时，再配下列环境变量（可与青龙通知并存）：
+
+| 变量 | 说明 | 必填 |
+|---|---|---|
 | `PUSH_WECOM_WEBHOOK` | 企业微信机器人 webhook | 可选 |
 | `PUSH_DINGTALK_WEBHOOK` | 钉钉机器人 webhook | 可选 |
 | `PUSH_FEISHU_WEBHOOK` | 飞书机器人 webhook | 可选 |
@@ -75,6 +85,7 @@
 | `PUSH_SERVERCHAN_KEY` | Server 酱 SendKey | 可选 |
 | `PUSH_PUSHPLUS_TOKEN` | PushPlus Token | 可选 |
 | `PUSH_BARK_URL` | Bark 推送 URL | 可选 |
+| `LYNK_USE_QL_NOTIFY` | `0`/`false` 关闭青龙内置通知（默认启用） | 可选 |
 
 **如何抓取 `refreshToken` 与 `deviceId`**：
 1. 手机抓包（Charles / Fiddler / 小黄鸟等），过滤域名 `app-services.lynkco.com.cn`。
