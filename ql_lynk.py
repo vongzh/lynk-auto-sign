@@ -663,6 +663,13 @@ def _load_ql_notify_send():
     if disabled:
         return None
 
+    # 默认关闭一言: notify.py 会请求 v1.hitokoto.cn, 出网/SSL 失败会拖垮整次推送.
+    # 官方判断是 hitokoto != "false" 才拉取; 必须传字符串 "false".
+    # 设 LYNK_HITOKOTO=1 可保留一言.
+    want_hitokoto = os.environ.get("LYNK_HITOKOTO", "").strip().lower() in ("1", "true", "yes", "on")
+    if not want_hitokoto:
+        os.environ["HITOKOTO"] = "false"
+
     # 把常见青龙路径加入 sys.path, 再尝试 import notify
     candidates = [
         os.path.dirname(os.path.abspath(__file__)),
@@ -684,6 +691,32 @@ def _load_ql_notify_send():
     return None
 
 
+def _call_ql_notify(ql_send, title, md_text):
+    """调用青龙 notify.send, 并强制关闭一言以免 hitokoto.cn SSL 失败导致整次推送中断.
+
+    青龙 sample/notify.py 默认 HITOKOTO=True, 发送前会同步请求 https://v1.hitokoto.cn/ ;
+    该站 SSL/出网失败时, one() 抛异常会让整次 send 失败 (你日志里的 SSLEOFError).
+    官方关闭方式: 环境变量 HITOKOTO=false (必须是字符串 false).
+    """
+    want_hitokoto = os.environ.get("LYNK_HITOKOTO", "").strip().lower() in ("1", "true", "yes", "on")
+    if not want_hitokoto:
+        os.environ["HITOKOTO"] = "false"
+        # notify 在 import 时把配置写进 push_config, 仅改环境变量可能不够
+        try:
+            import notify as _ql_notify  # type: ignore
+            cfg = getattr(_ql_notify, "push_config", None)
+            if isinstance(cfg, dict):
+                cfg["HITOKOTO"] = "false"
+        except Exception:
+            pass
+        # 新版 send(title, content, **kwargs) 可直接覆盖
+        try:
+            return ql_send(title, md_text, HITOKOTO="false")
+        except TypeError:
+            pass  # 旧版无 kwargs, 依赖上面的 push_config / 环境变量
+    return ql_send(title, md_text)
+
+
 def push_text(title, md_text):
     """多渠道推送, 返回结果汇总字符串.
 
@@ -703,10 +736,16 @@ def push_text(title, md_text):
     ql_send = _load_ql_notify_send()
     if ql_send:
         try:
-            ql_send(title, md_text)
+            _call_ql_notify(ql_send, title, md_text)
             results.append("青龙通知: OK")
         except Exception as e:
-            results.append(f"青龙通知: X {e}")
+            err = str(e)
+            if "hitokoto" in err.lower():
+                results.append(
+                    f"青龙通知: X {e} (一言 API 异常; 脚本已默认关闭一言, 请更新到最新脚本或在青龙环境变量设 HITOKOTO=false)"
+                )
+            else:
+                results.append(f"青龙通知: X {e}")
 
     # 1. 企业微信 (msgtype=markdown, 不渲染 <a>, 用 [text](url) + 末尾附 raw URL 兜底)
     url = os.environ.get("PUSH_WECOM_WEBHOOK", "").strip()
