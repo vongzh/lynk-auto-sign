@@ -70,24 +70,19 @@
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
 ## 推送通知
 
-**推荐（青龙）**：在青龙面板 **系统设置 → 通知** 里配置任意渠道即可。脚本会自动调用青龙内置的 `notify.send`，无需再配 `PUSH_*`。
+**默认**：走青龙面板 **系统设置 → 通知**（`USER_USE_QL_NOTIFY = True`）。
 
-日志出现 `青龙通知: OK` 即表示走了面板内置推送。若要关闭：环境变量 `LYNK_USE_QL_NOTIFY=0`。
+**额外 Bark（脚本直推）**：在 `ql_lynk.py` 顶部填写即可，不用环境变量：
 
-> 说明：青龙 `notify.py` 默认会请求「一言」`v1.hitokoto.cn`，该站 SSL/出网失败会导致整次推送失败。本脚本默认关闭一言（等价于 `HITOKOTO=false`）；若仍要一言，设 `LYNK_HITOKOTO=1`。
+```python
+USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
+```
 
-**可选（脚本自带渠道）**：不在青龙里跑、或还想额外推一路时，再配下列环境变量（可与青龙通知并存）：
+二者独立：青龙通知用面板里配的渠道；`USER_PUSH_BARK_URL` 只走脚本直推，不写入青龙的 `BARK_PUSH`。
 
-| 变量 | 说明 | 必填 |
-|---|---|---|
-| `PUSH_WECOM_WEBHOOK` | 企业微信机器人 webhook | 可选 |
-| `PUSH_DINGTALK_WEBHOOK` | 钉钉机器人 webhook | 可选 |
-| `PUSH_FEISHU_WEBHOOK` | 飞书机器人 webhook | 可选 |
-| `PUSH_TG_BOT_TOKEN` / `PUSH_TG_CHAT_ID` | Telegram | 可选 |
-| `PUSH_SERVERCHAN_KEY` | Server 酱 SendKey | 可选 |
-| `PUSH_PUSHPLUS_TOKEN` | PushPlus Token | 可选 |
-| `PUSH_BARK_URL` | Bark 推送 URL | 可选 |
-| `LYNK_USE_QL_NOTIFY` | `0`/`false` 关闭青龙内置通知（默认启用） | 可选 |
+日志含义：`青龙通知: OK (...)` = 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
+
+> 青龙 `notify.py` 默认会请求一言 `v1.hitokoto.cn`，SSL 失败会拖垮推送。本脚本默认关闭一言（`HITOKOTO=false`）。
 
 **如何抓取 `refreshToken` 与 `deviceId`**：
 1. 手机抓包（Charles / Fiddler / 小黄鸟等），过滤域名 `app-services.lynkco.com.cn`。
