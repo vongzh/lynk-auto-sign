@@ -70,39 +70,19 @@
 | `LYNK_APP_VERSION` / `LYNK_DEVICE_TYPE` | App 版本 / 设备类型（默认内置） | 可选 |
 ## 推送通知
 
-### 方式 A：脚本顶部 USER_CONFIG（推荐，不用环境变量）
+**默认**：走青龙面板 **系统设置 → 通知**（`USER_USE_QL_NOTIFY = True`）。
 
-编辑 `ql_lynk.py` 顶部：
+**额外 Bark（脚本直推）**：在 `ql_lynk.py` 顶部填写即可，不用环境变量：
 
 ```python
-USER_USE_QL_NOTIFY = False          # 不想走青龙内置通知时改 False
 USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
-# 也可填企业微信 / 钉钉 / 飞书 / Telegram / Server酱 / PushPlus
 ```
 
-### 方式 B：青龙「系统设置 → 通知」
+二者独立：青龙通知用面板里配的渠道；`USER_PUSH_BARK_URL` 只走脚本直推，不写入青龙的 `BARK_PUSH`。
 
-脚本默认会调用青龙 `notify.send`。注意 Python 通知变量名是 **`BARK_PUSH`**（不是本脚本的 `PUSH_BARK_URL`）。  
-若日志出现 `无推送渠道`，说明 `notify.py` 没读到渠道变量——改用方式 A 更省事。
+日志含义：`青龙通知: OK (...)` = 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
 
-日志 `青龙通知: OK (Bark)` 表示走了面板内置推送；`Bark: OK` 表示脚本直推 Bark。
-
-关闭青龙内置通知：`USER_USE_QL_NOTIFY = False`，或环境变量 `LYNK_USE_QL_NOTIFY=0`。
-
-> 说明：青龙 `notify.py` 默认会请求「一言」`v1.hitokoto.cn`，该站 SSL/出网失败会导致整次推送失败。本脚本默认关闭一言（等价于 `HITOKOTO=false`）；若仍要一言，设 `LYNK_HITOKOTO=1`。
-
-### 方式 C：环境变量 `PUSH_*`（可选）
-
-| 变量 | 说明 | 必填 |
-|---|---|---|
-| `PUSH_WECOM_WEBHOOK` | 企业微信机器人 webhook | 可选 |
-| `PUSH_DINGTALK_WEBHOOK` | 钉钉机器人 webhook | 可选 |
-| `PUSH_FEISHU_WEBHOOK` | 飞书机器人 webhook | 可选 |
-| `PUSH_TG_BOT_TOKEN` / `PUSH_TG_CHAT_ID` | Telegram | 可选 |
-| `PUSH_SERVERCHAN_KEY` | Server 酱 SendKey | 可选 |
-| `PUSH_PUSHPLUS_TOKEN` | PushPlus Token | 可选 |
-| `PUSH_BARK_URL` | Bark 推送 URL | 可选 |
-| `LYNK_USE_QL_NOTIFY` | `0`/`false` 关闭青龙内置通知（默认启用） | 可选 |
+> 青龙 `notify.py` 默认会请求一言 `v1.hitokoto.cn`，SSL 失败会拖垮推送。本脚本默认关闭一言（`HITOKOTO=false`）。
 
 **如何抓取 `refreshToken` 与 `deviceId`**：
 1. 手机抓包（Charles / Fiddler / 小黄鸟等），过滤域名 `app-services.lynkco.com.cn`。

@@ -112,25 +112,20 @@ USER_TOKEN_B = ""
 # 分享文章 ID (默认热门 ID)
 USER_SHARE_CONTENT_ID = "2072260486405246976"
 
-# ---------- 推送 (脚本直推, 不依赖青龙环境变量; 留空=不启用该渠道) ----------
-# 是否同时走青龙面板「系统设置 → 通知」(True/False). 只想用下面脚本渠道时改 False
+# ---------- 推送 ----------
+# 默认走青龙面板「系统设置 → 通知」(True). 一般不用改
 USER_USE_QL_NOTIFY = True
-# 企业微信机器人 webhook, 例: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
-USER_PUSH_WECOM_WEBHOOK = ""
-# 钉钉机器人 webhook
-USER_PUSH_DINGTALK_WEBHOOK = ""
-# 飞书机器人 webhook
-USER_PUSH_FEISHU_WEBHOOK = ""
-# Telegram
+# 额外脚本直推 Bark (可选): 填完整 URL 或设备码, 例 https://api.day.app/你的Key/ 或 你的Key
+# 与青龙通知独立; 青龙里没配好渠道时, 靠这里也能收到 Bark
+USER_PUSH_BARK_URL = ""
+# 以下为可选脚本直推渠道 (留空不用)
+USER_PUSH_WECOM_WEBHOOK = ""      # 企业微信 webhook
+USER_PUSH_DINGTALK_WEBHOOK = ""   # 钉钉 webhook
+USER_PUSH_FEISHU_WEBHOOK = ""     # 飞书 webhook
 USER_PUSH_TG_BOT_TOKEN = ""
 USER_PUSH_TG_CHAT_ID = ""
-# Server酱 SendKey
 USER_PUSH_SERVERCHAN_KEY = ""
-# PushPlus Token
 USER_PUSH_PUSHPLUS_TOKEN = ""
-# Bark: 填完整 URL 或设备码均可
-#   例: https://api.day.app/你的Key/   或   你的Key
-USER_PUSH_BARK_URL = ""
 # ==================== 配置结束 ====================
 
 # 优先级: 命令行参数 > 环境变量 (LYNK_* / PUSH_*) > 脚本顶部 USER_CONFIG
@@ -682,7 +677,10 @@ def _normalize_bark_url(value):
 
 
 def apply_user_push_config():
-    """把脚本顶部 USER_PUSH_* 写入环境变量 (不覆盖已有环境变量)."""
+    """把脚本顶部 USER_PUSH_* 写入环境变量 (不覆盖已有环境变量).
+
+    USER_PUSH_BARK_URL 只用于脚本直推 Bark, 不写入青龙 BARK_PUSH, 避免和面板通知重复推送.
+    """
     mapping = {
         "PUSH_WECOM_WEBHOOK": USER_PUSH_WECOM_WEBHOOK,
         "PUSH_DINGTALK_WEBHOOK": USER_PUSH_DINGTALK_WEBHOOK,
@@ -696,11 +694,6 @@ def apply_user_push_config():
     for env_key, val in mapping.items():
         if val and not os.environ.get(env_key, "").strip():
             os.environ[env_key] = val.strip() if isinstance(val, str) else str(val)
-
-    # 同步到青龙 notify 认识的变量名 (BARK_PUSH), 方便只改 USER_CONFIG 也能喂给 ql 通知
-    bark = os.environ.get("PUSH_BARK_URL", "").strip()
-    if bark and not os.environ.get("BARK_PUSH", "").strip():
-        os.environ["BARK_PUSH"] = bark.rstrip("/")
 
 
 def _ql_notify_channel_names():
@@ -805,17 +798,11 @@ def _call_ql_notify(ql_send, title, md_text):
         if not want_hitokoto:
             os.environ["HITOKOTO"] = "false"
             cfg["HITOKOTO"] = "false"
-        # 脚本 USER_CONFIG / PUSH_BARK_URL 同步进青龙 notify 认识的 BARK_PUSH
-        bark = os.environ.get("BARK_PUSH") or os.environ.get("PUSH_BARK_URL")
-        if bark and not cfg.get("BARK_PUSH"):
-            cfg["BARK_PUSH"] = bark.rstrip("/")
 
     channels = _ql_notify_channel_names()
     if not channels:
-        return False, (
-            "无推送渠道 — 青龙 notify 未读到 BARK_PUSH 等变量。"
-            "可在脚本顶部填 USER_PUSH_BARK_URL, 或把 USER_USE_QL_NOTIFY=False 改走脚本直推"
-        )
+        # 青龙没配渠道不算致命: 用户可用 USER_PUSH_BARK_URL 脚本直推
+        return False, "跳过(青龙通知未配置渠道; 可在面板配 BARK_PUSH, 或填 USER_PUSH_BARK_URL 脚本直推)"
 
     try:
         if not want_hitokoto:
@@ -845,17 +832,19 @@ def push_text(title, md_text):
     html_text = _md_to_html(md_text)
     sc_html = _md_to_serverchan_html(md_text)
 
-    # 0. 青龙面板内置通知 (notify.py)
+    # 0. 青龙面板内置通知 (默认开启; 无渠道时跳过并提示)
     ql_send = _load_ql_notify_send()
     if ql_send:
         ok, detail = _call_ql_notify(ql_send, title, md_text)
         if ok:
             results.append(f"青龙通知: OK ({detail})")
+        elif detail.startswith("跳过"):
+            results.append(f"青龙通知: {detail}")
         else:
             err = detail
             if "hitokoto" in err.lower():
                 results.append(
-                    f"青龙通知: X {err} (一言 API 异常; 脚本已默认关闭一言, 请更新到最新脚本或在青龙环境变量设 HITOKOTO=false)"
+                    f"青龙通知: X {err} (一言 API 异常; 脚本已默认关闭一言, 请设 HITOKOTO=false)"
                 )
             else:
                 results.append(f"青龙通知: X {err}")
