@@ -74,11 +74,13 @@
 
 | 方式 | 配置位置 | 本脚本调用 |
 |---|---|---|
-| **面板通知（默认）** | 系统设置 → 通知（如 Bark） | `QLAPI.systemNotify`（需用**定时任务**跑，才会注入 QLAPI） |
+| **面板通知（默认）** | 系统设置 → 通知（如 Bark） | `QLAPI.systemNotify`（定时任务命令请写 `ql_lynk.py`，才会注入 QLAPI） |
 | `notify.py` / 环境变量 | `BARK_PUSH` 等环境变量 | 仅在无 QLAPI 时回退到 `notify.send` |
 | **脚本直推** | 脚本顶部 `USER_PUSH_*` | 本脚本自己请求各渠道 |
 
 **默认**：`USER_USE_QL_NOTIFY = True`，优先走面板通知。在青龙里配好 Bark 后，用定时任务运行即可，不必再配 `BARK_PUSH`。
+
+> **定时任务命令很重要**：请填 `ql_lynk.py`（相对 scripts 目录），不要填 `python3 /ql/data/scripts/ql_lynk.py`。后者青龙不注入 `QLAPI`，会出现「脚本管理点运行能推、定时却失败」。
 
 **额外 Bark（脚本直推）**：在 `ql_lynk.py` 顶部填写即可，不用环境变量：
 
@@ -89,6 +91,8 @@ USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
 二者独立：`USER_PUSH_BARK_URL` 不写入青龙的 `BARK_PUSH`，也不会和面板配置混用。
 
 日志含义：`青龙通知: OK (...)` = `systemNotify` / 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
+
+> Bark / 面板 `systemNotify` 发的是**纯文本**（去掉 `**`、`` ` ``、`[文字](url)` 等），避免通知栏里 Markdown 符号乱成一团。
 
 > 回退到 `notify.py` 时会默认关闭一言（`HITOKOTO=false`），避免 `v1.hitokoto.cn` SSL 失败拖垮推送。
 
@@ -101,7 +105,7 @@ USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
 
 ### 4. 定时任务
 青龙 → **定时任务** → 新建：
-- 命令：`python3 /ql/scripts/ql_lynk.py`
+- 命令：`ql_lynk.py`（不要写 `python3 /绝对路径/...`）
 - 定时：`0 9 * * *`（每天 9 点，避开 0 点风控）
 
 ### 5. 命令行直接运行
