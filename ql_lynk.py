@@ -1156,7 +1156,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         log("ERR", f"查询签到状态失败: code={info.get('code')}  message={info.get('message', '')}")
         if not quiet:
             log("INFO", f"  raw: {json.dumps(info, ensure_ascii=False)[:300]}")
-        push_text("领克签到失败", f"**❌ 查询签到状态失败**\n\n```\n{json.dumps(info, ensure_ascii=False)[:200]}\n```")
+        push_text("领克签到失败", f"❌ 查询签到状态失败\n\n{json.dumps(info, ensure_ascii=False)[:200]}")
         return 3
 
     data = info.get("data") or {}
@@ -1236,21 +1236,14 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
                     log("ERR", "提示: 签到需原生 AppKey; 确认 LYNK_NATIVE_APP_KEY/SECRET 或脚本内置常量未过期")
                 if not quiet:
                     log("INFO", f"  raw: {json.dumps(sign_resp, ensure_ascii=False)[:300]}")
-                push_text("领克签到失败", f"**❌ 签到接口失败**\n\n```\n{json.dumps(sign_resp, ensure_ascii=False)[:200]}\n```")
+                push_text("领克签到失败", f"❌ 签到接口失败\n\n{json.dumps(sign_resp, ensure_ascii=False)[:200]}")
                 return 4
 
     md_lines.append(f"签到: {sign_status_str}")
-    md_lines.append(f"奖励: {reward}")
-    md_lines.append(f"连续: {streak} 天  /  补签卡: {sign_card} 张")
-    md_lines.append("")
-    md_lines.append("账户信息:")
-    md_lines.append(f"• 积分余额: {energy_point}  /  累计获得: {energy_income}")
-    md_lines.append(f"• 成长等级: {growth_name}  /  成长值: {growth_value}")
-    if task_progress:
-        md_lines.append("")
-        md_lines.append("签到任务进度:")
-        for tname, (proc, reward_t) in task_progress.items():
-            md_lines.append(f"• {tname}: {proc}  ({reward_t})")
+    md_lines.append(f"连续签到: {streak} 天")
+    md_lines.append(f"本次奖励: {reward}")
+    md_lines.append(f"能量体: {energy_point}")
+    md_lines.append(f"累计获得: {energy_income}")
 
     # 4. 拿 shareCode (无论 auto-share 与否都执行, 用于下面构造 URL)
     log("INFO", "[4/5] 拿 shareCode...")
@@ -1286,12 +1279,6 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
             mark = "✅" if res["ok"] else "❌"
             log("OK" if res["ok"] else "ERR",
                 f"  B{i} 分享 {mark}  {res['msg']}  (Δ能量体 {res['energy_delta']:+d})")
-
-        md_lines.append("")
-        md_lines.append(f"auto-share (contentId {share_content_id[-12:]}, {len(share_results)} 个 B 账号):")
-        for r in share_results:
-            mark = "✅" if r["ok"] else "❌"
-            md_lines.append(f"• {mark} B{r['idx']}: {r['msg']}  (Δ能量体 {r['energy_delta']:+d})")
     else:
         if auto_share and not token_b_list:
             log("INFO", "[5/5] auto-share 未启用 (未配 LYNK_TOKEN_B)")
@@ -1306,19 +1293,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         log("OK", share_url)
         log("OK", "━" * 60)
 
-    if share_url:
-        md_lines.append("")
-        md_lines.append("📤 分享链接 (复制到微信发, 别人点击你 +5 能量体):")
-        md_lines.append(share_url)
-
-    # 构造推送正文 (纯文本, Bark/面板通知不吃 markdown)
-    md_lines.insert(0, f"时间: {now()}")
-    md_lines.insert(1, f"用户标识: self-hosted")
-    md_lines.insert(2, f"accessToken: {'缓存命中' if source == 'cache' else '本次 refresh'}")
-    if rt_left is not None:
-        md_lines.append("")
-        md_lines.append(f"refreshToken: 剩 {rt_left} 天 (到期 {rt_expire_str})")
-
+    # 推送只保留签到结果 / 天数 / 能量体 (详细信息见上方日志)
     title = "领克签到成功" if "成功" in sign_status_str else "领克签到 (已签)"
     md_text = "\n".join(md_lines)
 
@@ -1388,7 +1363,7 @@ def main():
     except Exception as e:
         log("ERR", f"未捕获异常: {e}")
         log("ERR", traceback.format_exc())
-        push_text("领克签到异常", f"**❌ 脚本崩溃**\n\n```\n{traceback.format_exc()[:600]}\n```")
+        push_text("领克签到异常", f"❌ 脚本崩溃\n\n{traceback.format_exc()[:600]}")
         sys.exit(99)
 
 
