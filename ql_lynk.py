@@ -679,14 +679,18 @@ def _md_to_plain(text):
     # [label](url) -> label + 下一行 url (方便复制)
     text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1\n\2", text)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-    # **bold** / *italic*
+    # **bold** / __bold__ / *italic* / _italic_
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
     text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
+    text = re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", r"\1", text)
     # `code`
     text = re.sub(r"`([^`]+)`", r"\1", text)
     # headings / list markers
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^\*\s+", "• ", text, flags=re.MULTILINE)
+    text = re.sub(r"^[\*\-]\s+", "• ", text, flags=re.MULTILINE)
+    # 清掉残留的 markdown 强调符 (避免手机上看到 *** / **)
+    text = text.replace("***", "").replace("**", "").replace("`", "")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -1108,7 +1112,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         hint = _format_network_hint(msg)
         if hint:
             log("ERR", hint)
-        push_text("领克签到失败", f"**❌ 续 token 失败**\n\n```\n{msg}\n```")
+        push_text("领克签到失败", f"❌ 续 token 失败\n\n{msg}")
         return 2
 
     if source == "cache":
@@ -1235,18 +1239,18 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
                 push_text("领克签到失败", f"**❌ 签到接口失败**\n\n```\n{json.dumps(sign_resp, ensure_ascii=False)[:200]}\n```")
                 return 4
 
-    md_lines.append(f"**签到**: {sign_status_str}")
-    md_lines.append(f"**奖励**: {reward}")
-    md_lines.append(f"**连续**: {streak} 天  /  补签卡: {sign_card} 张")
+    md_lines.append(f"签到: {sign_status_str}")
+    md_lines.append(f"奖励: {reward}")
+    md_lines.append(f"连续: {streak} 天  /  补签卡: {sign_card} 张")
     md_lines.append("")
-    md_lines.append("**账户信息**:")
-    md_lines.append(f"- 积分余额: **{energy_point}**  /  累计获得: **{energy_income}**")
-    md_lines.append(f"- 成长等级: **{growth_name}**  /  成长值: **{growth_value}**")
+    md_lines.append("账户信息:")
+    md_lines.append(f"• 积分余额: {energy_point}  /  累计获得: {energy_income}")
+    md_lines.append(f"• 成长等级: {growth_name}  /  成长值: {growth_value}")
     if task_progress:
         md_lines.append("")
-        md_lines.append("**签到任务进度**:")
+        md_lines.append("签到任务进度:")
         for tname, (proc, reward_t) in task_progress.items():
-            md_lines.append(f"- {tname}: `{proc}`  ({reward_t})")
+            md_lines.append(f"• {tname}: {proc}  ({reward_t})")
 
     # 4. 拿 shareCode (无论 auto-share 与否都执行, 用于下面构造 URL)
     log("INFO", "[4/5] 拿 shareCode...")
@@ -1284,10 +1288,10 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
                 f"  B{i} 分享 {mark}  {res['msg']}  (Δ能量体 {res['energy_delta']:+d})")
 
         md_lines.append("")
-        md_lines.append(f"**auto-share** (contentId `{share_content_id[-12:]}`, {len(share_results)} 个 B 账号):")
+        md_lines.append(f"auto-share (contentId {share_content_id[-12:]}, {len(share_results)} 个 B 账号):")
         for r in share_results:
             mark = "✅" if r["ok"] else "❌"
-            md_lines.append(f"- {mark} B{r['idx']}: {r['msg']}  (Δ能量体 `{r['energy_delta']:+d}`)")
+            md_lines.append(f"• {mark} B{r['idx']}: {r['msg']}  (Δ能量体 {r['energy_delta']:+d})")
     else:
         if auto_share and not token_b_list:
             log("INFO", "[5/5] auto-share 未启用 (未配 LYNK_TOKEN_B)")
@@ -1304,18 +1308,16 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
 
     if share_url:
         md_lines.append("")
-        md_lines.append(f"**📤 分享链接** (复制到微信发, 别人点击你 +5 能量体):")
-        md_lines.append(f"")
-        # markdown 链接: 企业微信等可点; Bark/systemNotify 会经 _md_to_plain 拆成文字+URL
-        md_lines.append(f"[👉 点击领取 +5 能量体]({share_url})")
+        md_lines.append("📤 分享链接 (复制到微信发, 别人点击你 +5 能量体):")
+        md_lines.append(share_url)
 
-    # 5. 构造 markdown 推送
-    md_lines.insert(0, f"**时间**: `{now()}`")
-    md_lines.insert(1, f"**用户标识**: `self-hosted`")
-    md_lines.insert(2, f"**accessToken**: {'缓存命中' if source == 'cache' else '本次 refresh'}")
+    # 构造推送正文 (纯文本, Bark/面板通知不吃 markdown)
+    md_lines.insert(0, f"时间: {now()}")
+    md_lines.insert(1, f"用户标识: self-hosted")
+    md_lines.insert(2, f"accessToken: {'缓存命中' if source == 'cache' else '本次 refresh'}")
     if rt_left is not None:
         md_lines.append("")
-        md_lines.append(f"**refreshToken**: 剩 **{rt_left}** 天 (到期 `{rt_expire_str}`)")
+        md_lines.append(f"refreshToken: 剩 {rt_left} 天 (到期 {rt_expire_str})")
 
     title = "领克签到成功" if "成功" in sign_status_str else "领克签到 (已签)"
     md_text = "\n".join(md_lines)

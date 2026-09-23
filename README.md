@@ -92,7 +92,7 @@ USER_PUSH_BARK_URL = "https://api.day.app/你的Key/"   # 或只填设备码
 
 日志含义：`青龙通知: OK (...)` = `systemNotify` / 面板推送成功；`Bark: OK` = 脚本直推 Bark 成功。
 
-> Bark / 面板 `systemNotify` 发的是**纯文本**（去掉 `**`、`` ` ``、`[文字](url)` 等），避免通知栏里 Markdown 符号乱成一团。
+> 推送正文已改为**纯文本**（无 `**` / `` ` ``）。请用最新 `ql_lynk.py` 覆盖青龙脚本后再跑；旧脚本仍会带 Markdown 符号。
 
 > 回退到 `notify.py` 时会默认关闭一言（`HITOKOTO=false`），避免 `v1.hitokoto.cn` SSL 失败拖垮推送。
 
