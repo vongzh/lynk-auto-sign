@@ -667,6 +667,30 @@ def _md_to_serverchan_html(text):
     return text
 
 
+def _md_to_plain(text):
+    """markdown 转纯文本, 供 Bark / QLAPI.systemNotify 使用.
+
+    Bark 通知栏几乎不渲染 markdown; 青龙 systemNotify 也按纯文本下发,
+    直接发 ** / ` / [text](url) 会显得很乱.
+    """
+    text = text or ""
+    # fenced code
+    text = re.sub(r"```[\w]*\n?(.*?)```", r"\1", text, flags=re.DOTALL)
+    # [label](url) -> label + 下一行 url (方便复制)
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1\n\2", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    # **bold** / *italic*
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
+    # `code`
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    # headings / list markers
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\*\s+", "• ", text, flags=re.MULTILINE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _normalize_bark_url(value):
     """接受完整 Bark URL 或纯设备码, 统一成可请求的 URL."""
     v = (value or "").strip()
@@ -861,21 +885,23 @@ def push_text(title, md_text):
     """多渠道推送, 返回结果汇总字符串.
 
     优先级:
-      1. QLAPI.systemNotify — 青龙「系统设置 → 通知」(面板 Bark 等, 默认启用)
+      1. QLAPI.systemNotify — 青龙「系统设置 → 通知」(面板 Bark 等, 默认启用; 发纯文本)
       2. notify.send — 仅当 systemNotify 不可用时回退 (读环境变量 BARK_PUSH 等)
       3. 脚本自带 PUSH_* / USER_PUSH_* 直推渠道
 
     不同渠道语法差异:
       - 企业微信 / 钉钉 / Server酱 / 飞书: HTML <a href="URL">text</a>
-      - PushPlus / Bark / Telegram: 标准 markdown [text](url)
+      - PushPlus / Telegram: 标准 markdown [text](url)
+      - Bark / systemNotify: 纯文本 (不发 markdown 符号)
     """
     results = []
     html_text = _md_to_html(md_text)
     sc_html = _md_to_serverchan_html(md_text)
+    plain_text = _md_to_plain(md_text)
 
-    # 0. 青龙面板系统通知 (默认开启)
+    # 0. 青龙面板系统通知 (默认开启; Bark 等按纯文本下发)
     if _ql_notify_enabled():
-        sys_ret = _call_ql_system_notify(title, md_text)
+        sys_ret = _call_ql_system_notify(title, plain_text)
         if sys_ret is not None:
             ok, detail = sys_ret
             if ok:
@@ -886,7 +912,7 @@ def push_text(title, md_text):
             # 非定时任务 / 无 QLAPI: 回退到 notify.send (环境变量体系)
             ql_send = _load_ql_notify_send()
             if ql_send:
-                ok, detail = _call_ql_notify(ql_send, title, md_text)
+                ok, detail = _call_ql_notify(ql_send, title, plain_text)
                 if ok:
                     results.append(f"青龙notify: OK ({detail})")
                 elif detail.startswith("跳过"):
@@ -995,12 +1021,12 @@ def push_text(title, md_text):
         except Exception as e:
             results.append(f"PushPlus: X {e}")
 
-    # 7. Bark (URL 拼接, body 支持 markdown)
+    # 7. Bark (纯文本 body; 不传 markdown, 避免通知栏显示 ** / ` 等符号)
     bark_url = _normalize_bark_url(os.environ.get("PUSH_BARK_URL", ""))
     if bark_url:
         try:
             sep = "&" if "?" in bark_url else "?"
-            url = f"{bark_url}{sep}title={quote(title)}&body={quote(md_text)}&markdown=1"
+            url = f"{bark_url}{sep}title={quote(title)}&body={quote(plain_text)}"
             r = requests.get(url, timeout=10)
             results.append(f"Bark: {'OK' if r.ok else 'X'}")
         except Exception as e:
@@ -1280,7 +1306,7 @@ def run(rt, device_id, token_b_list=None, share_content_id=None, auto_share=Fals
         md_lines.append("")
         md_lines.append(f"**📤 分享链接** (复制到微信发, 别人点击你 +5 能量体):")
         md_lines.append(f"")
-        # markdown 链接语法 [文字](url), 企业微信/钉钉/飞书/PushPlus/Bark 都能识别为可点击链接
+        # markdown 链接: 企业微信等可点; Bark/systemNotify 会经 _md_to_plain 拆成文字+URL
         md_lines.append(f"[👉 点击领取 +5 能量体]({share_url})")
 
     # 5. 构造 markdown 推送
