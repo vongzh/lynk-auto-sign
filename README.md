@@ -74,13 +74,13 @@
 
 | 方式 | 配置位置 | 本脚本调用 |
 |---|---|---|
-| **面板通知（默认）** | 系统设置 → 通知（如 Bark） | `QLAPI.systemNotify`（脚本会自动加载；定时任务命令请写 `ql_lynk.py`） |
+| **面板通知（默认）** | 系统设置 → 通知（如 Bark） | `QLAPI.systemNotify`（定时任务命令请写 `ql_lynk.py`，才会注入 QLAPI） |
 | `notify.py` / 环境变量 | `BARK_PUSH` 等环境变量 | 仅在无 QLAPI 时回退到 `notify.send` |
 | **脚本直推** | 脚本顶部 `USER_PUSH_*` | 本脚本自己请求各渠道 |
 
 **默认**：`USER_USE_QL_NOTIFY = True`，优先走面板通知。在青龙里配好 Bark 后，用定时任务运行即可，不必再配 `BARK_PUSH`。
 
-> **定时任务命令很重要**：请填 `ql_lynk.py`（相对 scripts 目录），不要填 `python3 /ql/data/scripts/ql_lynk.py`。后者会导致青龙不注入 `PYTHONPATH`/QLAPI；你在脚本管理里点「运行」能推成功、定时却失败，通常就是这个原因。本脚本也会尝试自行加载 `/ql/shell/preload`，但正确命令更稳妥。
+> **定时任务命令很重要**：请填 `ql_lynk.py`（相对 scripts 目录），不要填 `python3 /ql/data/scripts/ql_lynk.py`。后者青龙不注入 `QLAPI`，会出现「脚本管理点运行能推、定时却失败」。
 
 **额外 Bark（脚本直推）**：在 `ql_lynk.py` 顶部填写即可，不用环境变量：
 
