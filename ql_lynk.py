@@ -36,6 +36,7 @@
   LYNK_USE_QL_NOTIFY     0/false 关闭青龙内置通知 (默认启用, 优先 QLAPI.systemNotify)
 
 青龙定时: 0 9 * * *  (每天 9 点)
+定时任务命令请填: ql_lynk.py  (不要写 python3 /绝对路径, 否则可能不注入 QLAPI)
 """
 
 import os
@@ -708,15 +709,94 @@ def _ql_notify_enabled():
 
 
 def _get_qlapi():
-    """获取青龙任务注入的 QLAPI (builtins / 全局). 非定时任务环境通常为 None."""
+    """获取青龙 QLAPI (优先已注入的 builtins, 否则自行加载 shell/preload).
+
+    注意: 定时任务若写成 `python3 /绝对路径/ql_lynk.py`, 青龙不会设置
+    PYTHONPATH=/ql/shell/preload, sitecustomize 不会注入 QLAPI.
+    正确写法是命令填 `ql_lynk.py` (相对 scripts 目录).
+    这里在检测到青龙目录时主动加载 Client, 兼容两种命令写法.
+    """
     try:
         import builtins
         api = getattr(builtins, "QLAPI", None)
-        if api is not None:
+        if api is not None and callable(getattr(api, "systemNotify", None)):
             return api
     except Exception:
         pass
-    return globals().get("QLAPI")
+    g = globals().get("QLAPI")
+    if g is not None and callable(getattr(g, "systemNotify", None)):
+        return g
+    return _bootstrap_qlapi()
+
+
+def _ql_preload_dirs():
+    """青龙 preload 目录候选 (含 Client / sitecustomize)."""
+    bases = []
+    ql_dir = (os.environ.get("QL_DIR") or "").strip()
+    if ql_dir:
+        bases.append(ql_dir)
+    bases.extend(["/ql", "/ql/data/.."])
+    seen = set()
+    out = []
+    for b in bases:
+        if not b:
+            continue
+        try:
+            b = os.path.abspath(b)
+        except Exception:
+            continue
+        if b in seen:
+            continue
+        seen.add(b)
+        p = os.path.join(b, "shell", "preload")
+        if os.path.isdir(p):
+            out.append((b, p))
+    return out
+
+
+def _bootstrap_qlapi():
+    """无 sitecustomize 注入时, 直接加载青龙 Client 以调用 systemNotify.
+
+    Client.systemNotify 通过 node 调本地青龙 API, 读面板「系统设置→通知」.
+    不依赖 __ql_notify__/环境变量 BARK_PUSH.
+    """
+    pairs = _ql_preload_dirs()
+    if not pairs:
+        return None
+
+    # Client.js 依赖 QL_DIR
+    if not (os.environ.get("QL_DIR") or "").strip():
+        os.environ["QL_DIR"] = pairs[0][0]
+
+    last_err = None
+    for _base, preload in pairs:
+        if preload not in sys.path:
+            sys.path.insert(0, preload)
+        try:
+            # 清掉可能失败的半成品缓存, 保证从 preload 重新导入
+            for mod in ("client", "env", "__ql_notify__", "notify"):
+                sys.modules.pop(mod, None)
+            from client import Client  # type: ignore
+
+            class _QlApi(Client):
+                pass
+
+            api = _QlApi()
+            if not callable(getattr(api, "systemNotify", None)):
+                continue
+            try:
+                import builtins
+                builtins.QLAPI = api
+            except Exception:
+                pass
+            globals()["QLAPI"] = api
+            return api
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err and os.environ.get("LYNK_DEBUG_QLAPI", "").strip():
+        print(f"[LYNK] bootstrap QLAPI failed: {last_err}", file=sys.stderr)
+    return None
 
 
 def _ql_notify_channel_names():
@@ -833,7 +913,11 @@ def _call_ql_notify(ql_send, title, md_text):
 
     channels = _ql_notify_channel_names()
     if not channels:
-        return False, "跳过(notify.py 无环境变量渠道; 面板通知请用定时任务跑以启用 QLAPI.systemNotify, 或填 USER_PUSH_BARK_URL)"
+        return False, (
+            "跳过(notify.py 无环境变量渠道; "
+            "面板通知需 QLAPI.systemNotify — 定时任务命令请写 ql_lynk.py 不要写 python3 绝对路径, "
+            "或填 USER_PUSH_BARK_URL)"
+        )
 
     try:
         if not want_hitokoto:
@@ -892,7 +976,8 @@ def push_text(title, md_text):
                         results.append(f"青龙notify: X {err}")
             else:
                 results.append(
-                    "青龙通知: 跳过(无 QLAPI; 请用青龙定时任务运行以走面板通知, 或填 USER_PUSH_BARK_URL)"
+                    "青龙通知: 跳过(无 QLAPI; 定时任务命令请写 ql_lynk.py, "
+                    "或确认 /ql/shell/preload 存在, 或填 USER_PUSH_BARK_URL)"
                 )
 
     # 1. 企业微信 (msgtype=markdown, 不渲染 <a>, 用 [text](url) + 末尾附 raw URL 兜底)
